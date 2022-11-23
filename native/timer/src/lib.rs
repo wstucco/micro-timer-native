@@ -1,25 +1,63 @@
-use std::thread;
+use std::thread::{self, spawn};
 use std::time::{Duration, Instant};
 
-fn main() {
-    let start = Instant::now();
+use rustler::{Atom, Encoder, Env, LocalPid, OwnedEnv};
 
-    let duration = Duration::from_micros(200);
-    thread::sleep(duration);
+#[rustler::nif]
+fn sleep(env: Env, nanoseconds: u64) -> Atom {
+    let pid = env.pid().to_owned();
 
-    let duration = start.elapsed();
-
-    println!("Time elapsed in expensive_function() is: {:?}", duration);
-
-    thread::spawn(move || loop {
-        thread::sleep(Duration::from_secs(1));
-        // println!("slept for 1 second");
-        println!("{:?}", start.elapsed().as_micros());
+    let _ = spawn(move || {
+        do_sleep(Duration::from_nanos(nanoseconds));
+        send_done_to_pid(&pid);
     });
 
-    let _ = thread::spawn(|| loop {
-        thread::sleep(Duration::from_secs(2));
-        println!("Slept for 2 seconds!")
-    })
-    .join();
+    return rustler::types::atom::ok();
 }
+
+#[rustler::nif]
+fn interval(env: Env, nanoseconds: u64) -> Atom {
+    let pid = env.pid().to_owned();
+
+    let _ = spawn(move || {
+        let duration = Duration::from_nanos(nanoseconds);
+        println!("interval duration : {:?}\r", duration);
+
+        loop {
+            do_sleep(duration);
+            println!("timer ticked\r");
+            send_done_to_pid(&pid)
+        }
+    });
+
+    return rustler::types::atom::ok();
+}
+
+#[cfg(debug_assertions)]
+fn do_sleep(duration: Duration) {
+    let start = Instant::now();
+
+    thread::sleep(duration);
+
+    let elapsed = start.elapsed();
+    println!(
+        "time elapsed nano: {:?} micro: {:?} millis: {:?}\r",
+        elapsed.as_nanos(),
+        elapsed.as_micros(),
+        elapsed.as_millis()
+    );
+}
+
+#[cfg(not(debug_assertions))]
+fn do_sleep(duration: Duration) {
+    println!("Debugging disabled");
+    thread::sleep(duration);
+}
+
+fn send_done_to_pid(pid: &LocalPid) {
+    let mut msg_env = OwnedEnv::new();
+    let ok = rustler::types::atom::ok();
+    msg_env.send_and_clear(pid, |env| (pid, ok).encode(env));
+}
+
+rustler::init!("Elixir.MicroTimer.Native", [sleep, interval]);
