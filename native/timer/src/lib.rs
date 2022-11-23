@@ -9,25 +9,7 @@ fn sleep(env: Env, nanoseconds: u64) -> Atom {
 
     let _ = spawn(move || {
         do_sleep(Duration::from_nanos(nanoseconds));
-        send_done_to_pid(&pid);
-    });
-
-    return rustler::types::atom::ok();
-}
-
-#[rustler::nif]
-fn interval(env: Env, nanoseconds: u64) -> Atom {
-    let pid = env.pid().to_owned();
-
-    let _ = spawn(move || {
-        let duration = Duration::from_nanos(nanoseconds);
-        println!("interval duration : {:?}\r", duration);
-
-        loop {
-            do_sleep(duration);
-            println!("timer ticked\r");
-            send_done_to_pid(&pid)
-        }
+        signal_sleep_done_to_pid(&pid);
     });
 
     return rustler::types::atom::ok();
@@ -54,10 +36,10 @@ fn do_sleep(duration: Duration) {
     thread::sleep(duration);
 }
 
-fn send_done_to_pid(pid: &LocalPid) {
+fn signal_sleep_done_to_pid(pid: &LocalPid) {
     let mut msg_env = OwnedEnv::new();
     let ok = rustler::types::atom::ok();
     msg_env.send_and_clear(pid, |env| (pid, ok).encode(env));
 }
 
-rustler::init!("Elixir.MicroTimer.Native", [sleep, interval]);
+rustler::init!("Elixir.MicroTimer.Native", [sleep]);
