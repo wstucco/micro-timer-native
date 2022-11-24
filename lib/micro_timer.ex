@@ -93,7 +93,13 @@ defmodule MicroTimer do
 
   defp do_interval(duration) do
     do_sleep(duration)
-    do_interval(duration)
+
+    pid = self()
+
+    receive do
+      {^pid, :ok} ->
+        do_interval(duration)
+    end
   end
 
   defp ref_table do
