@@ -26,4 +26,4 @@ micro_timer_native-*.tar
 /tmp/
 
 # Compiled library
-/priv/native/*.so
+/priv/native/
