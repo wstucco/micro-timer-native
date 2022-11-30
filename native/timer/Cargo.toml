@@ -13,11 +13,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 crossbeam-channel = "0.5.6"
-lazy_static = "1.4.0"
 rustler = "0.26.0"
-
-[build]
-incremental = true
 
 [profile.release]
 strip = "debuginfo"

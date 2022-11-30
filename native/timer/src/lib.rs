@@ -1,70 +1,141 @@
-use std::thread::{self};
+use std::thread::spawn;
 use std::time::Duration;
 
-use std::io::Write;
+use std::sync::Mutex;
 
-use rustler::{Atom, Encoder, Env, LocalPid, OwnedEnv, Term};
+use rustler::{Atom, Encoder, Env, LocalPid, OwnedEnv, ResourceArc, Term};
 
-use crossbeam_channel::{unbounded, Receiver, Sender};
+use crossbeam_channel::{bounded, select, tick, Sender};
+use Message::{Cancel, Tick};
 
-#[macro_use]
-extern crate lazy_static;
-
-lazy_static! {
-    static ref CHANNEL: (Sender<LocalPid>, Receiver<LocalPid>) = unbounded();
+mod atoms {
+    rustler::atoms! {
+        ok,
+        tick,
+        cancel,
+    }
 }
 
-fn load(_env: Env, _: Term) -> bool {
-    thread::spawn(move || loop {
-        if let Ok(pid) = CHANNEL.1.recv() {
-            signal(&pid);
-        }
-    });
+enum Message {
+    Tick(LocalPid),
+    Cancel(LocalPid),
+}
+
+struct SenderResource {
+    pub sender: Mutex<Sender<Message>>,
+    pub pid: Mutex<LocalPid>,
+}
+
+impl SenderResource {
+    pub fn new(sender: Sender<Message>, pid: LocalPid) -> ResourceArc<SenderResource> {
+        ResourceArc::new(SenderResource {
+            sender: Mutex::new(sender),
+            pid: Mutex::new(pid),
+        })
+    }
+}
+
+fn load(env: Env, _: Term) -> bool {
+    rustler::resource!(SenderResource, env);
     true
 }
 
 #[rustler::nif]
-fn sleep(env: Env, nanoseconds: u64) -> Atom {
-    let pid = env.pid().to_owned();
+fn sleep(env: Env, duration: u64, pid: LocalPid) -> Atom {
+    if let Ok(_) = tick(ns(duration)).recv() {
+        send_ok(env, &pid);
+    };
 
-    thread::spawn(move || sleep_then_signal(nanoseconds, pid));
-
-    return rustler::types::atom::ok();
+    return atoms::ok();
 }
 
-fn sleep_then_signal(duration: u64, pid: LocalPid) -> () {
-    do_sleep(Duration::from_nanos(duration));
-    _ = CHANNEL.0.send(pid);
+#[rustler::nif]
+fn interval(duration: u64, pid: LocalPid, times: i32) -> Result<ResourceArc<SenderResource>, ()> {
+    let (s, r) = bounded::<Message>(0);
+
+    let resource = SenderResource::new(s.clone(), pid.clone());
+
+    spawn(move || {
+        let ticker = tick(ns(duration));
+        let (s2, r2) = bounded(0);
+
+        spawn(move || {
+            let mut c = 0;
+            loop {
+                select! {
+                    // a tick has been received
+                    recv(ticker) -> _ => {
+                        s.send(Tick(pid)).unwrap();
+
+                        c += 1;
+                        if times > 0 && c == times {
+                            // if we loop `times` times, break it
+                            s.send(Message::Cancel(pid)).unwrap();
+                        };
+                    },
+                    // a cancel message has just arrived
+                    recv(r2) -> msg => {
+                        if let Ok(Cancel(_)) = msg {
+                            break;
+                        }
+                    },
+                }
+            }
+        });
+
+        loop {
+            match r.recv() {
+                // send a {pid, :tick} message to the Elixir rocess on every tick
+                Ok(Tick(pid)) => send_tick(&pid),
+                Ok(Cancel(pid)) => {
+                    // signal the Elixir process that we are about to exit by
+                    // sending a {pid, :cancel} message
+                    send_cancel(&pid);
+                    // also signal the looping thread above
+                    s2.send(Cancel(pid)).unwrap();
+                    break;
+                }
+                _ => {}
+            }
+        }
+    });
+
+    Ok(resource)
 }
 
-#[cfg(debug_assertions)]
-fn do_sleep(duration: Duration) {
-    use std::{io, time::Instant};
+#[rustler::nif]
+fn cancel(res: ResourceArc<SenderResource>) -> Atom {
+    let sender = res.sender.try_lock().unwrap();
+    let pid = res.pid.try_lock().unwrap();
 
-    let start = Instant::now();
+    let _ = sender.send(Message::Cancel(*pid));
 
-    thread::sleep(duration);
-
-    let elapsed = start.elapsed();
-    let mut lck = io::stdout().lock();
-    _ = writeln!(
-        &mut lck,
-        "time elapsed nano: {:?} micro: {:?} millis: {:?}\r",
-        elapsed.as_nanos(),
-        elapsed.as_micros(),
-        elapsed.as_millis()
-    );
+    atoms::ok()
 }
 
-#[cfg(not(debug_assertions))]
-fn do_sleep(duration: Duration) {
-    thread::sleep(duration);
+fn ns(duration: u64) -> Duration {
+    Duration::from_nanos(duration)
 }
 
-fn signal(pid: &LocalPid) {
-    let mut msg_env = OwnedEnv::new();
-    let ok = rustler::types::atom::ok();
-    msg_env.send_and_clear(pid, |env| (pid, ok).encode(env));
+fn send_ok(env: Env, pid: &LocalPid) {
+    env.send(&pid, (pid, atoms::ok()).encode(env));
 }
 
-rustler::init!("Elixir.MicroTimer.Native", [sleep], load = load);
+fn send_tick(pid: &LocalPid) {
+    send(pid, atoms::tick());
+}
+
+fn send_cancel(pid: &LocalPid) {
+    send(pid, atoms::cancel());
+}
+
+fn send(pid: &LocalPid, atom: Atom) {
+    let mut env = OwnedEnv::new();
+    env.send_and_clear(pid, |env| (pid, atom).encode(env));
+}
+
+rustler::init!(
+    "Elixir.MicroTimer.Native",
+    [sleep, interval, cancel],
+    load = load
+);

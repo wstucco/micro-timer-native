@@ -138,7 +138,6 @@ name = "timer"
 version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
- "lazy_static",
  "rustler",
 ]
 
