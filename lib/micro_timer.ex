@@ -1,19 +1,21 @@
 defmodule MicroTimer do
-  @units [:nanosecond, :microsecond, :millisecond, :second, :minute, :hour]
-  @table_name :___micro_timers___
+  alias MicroTimer.Native
+  alias MicroTimer.Native.ResourceHandle
+
+  @units [:second, :millisecond, :microsecond, :nanosecond]
 
   def sleep({duration, unit}) when is_integer(duration) and unit in @units do
-    nanoseconds = to_nano(duration, unit)
-    sleep(nanoseconds)
+    nanos = to_nanoseconds(duration, unit)
+    sleep(nanos)
   end
 
-  def sleep(nanoseconds) when is_integer(nanoseconds) do
-    do_sleep(nanoseconds)
+  def sleep(duration) when is_integer(duration) and duration > 0 do
     pid = self()
 
+    Native.sleep(duration, pid)
+
     receive do
-      {^pid, :ok} = message ->
-        IO.inspect({:slept, message})
+      {^pid, :ok} -> :ok
     end
   end
 
@@ -22,91 +24,76 @@ defmodule MicroTimer do
   end
 
   def apply_after({duration, unit}, callable) when is_integer(duration) and unit in @units do
-    apply_after(to_nano(duration, unit), callable)
+    apply_after(to_nanoseconds(duration, unit), callable)
   end
 
-  def apply_after(time, {module, function_name, args})
-      when is_atom(module) and is_atom(function_name) and is_list(args) and is_integer(time) do
-    pid =
-      spawn(fn ->
-        receive do
-          :ok -> apply(module, function_name, args)
-        end
-      end)
-
-    do_sleep(time)
-    cancellable_for(pid)
+  def apply_after(duration, {module, function_name, args})
+      when is_atom(module) and is_atom(function_name) and is_list(args) and is_integer(duration) do
+    fun = fn -> apply(module, function_name, args) end
+    apply_after(duration, fun)
   end
 
-  def interval({duration, unit}) when is_integer(duration) and unit in @units do
-    nanoseconds = to_nano(duration, unit)
-    interval(nanoseconds)
+  def apply_after(duration, fun)
+      when is_integer(duration) and is_function(fun) and duration > 0 do
+    pid = apply_on_tick(fun)
+    {:ok, resource} = Native.interval(duration, pid, 1)
+    {:ok, ResourceHandle.wrap(resource)}
   end
 
-  def interval(nanoseconds) when is_integer(nanoseconds) do
-    pid = spawn(fn -> do_interval(nanoseconds) end)
-    cancellable_for(pid)
+  def apply_interval({duration, unit}, callable) when is_integer(duration) and unit in @units do
+    apply_interval(to_nanoseconds(duration, unit), callable)
   end
 
-  @spec cancel(reference()) :: {:ok, :cancel} | {:error, :invalid_reference}
-  def cancel(reference) when is_reference(reference) do
-    case :ets.lookup(ref_table(), reference) do
-      [{^reference, pid, receiver}] ->
-        send(receiver, {pid, :cancel})
-        :ets.delete(ref_table(), reference)
-        {:ok, :cancel}
-
-      [] ->
-        {:error, :invalid_reference}
-    end
+  def apply_interval(duration, {module, function_name, args})
+      when is_atom(module) and is_atom(function_name) and is_list(args) and is_integer(duration) do
+    fun = fn -> apply(module, function_name, args) end
+    apply_interval(duration, fun)
   end
 
-  defp cancellable_for(pid) when is_pid(pid) do
-    receiver = receiver_for(pid)
-    ref = make_ref()
-    :ets.insert(ref_table(), {ref, pid, receiver})
-    {:ok, ref}
+  def apply_interval(duration, fun)
+      when is_integer(duration) and is_function(fun) and duration > 0 do
+    pid = apply_on_tick(fun)
+    {:ok, resource} = Native.interval(duration, pid)
+    {:ok, ResourceHandle.wrap(resource)}
   end
 
-  defp receiver_for(pid) when is_pid(pid) do
+  def exit_after(duration, pid, reason \\ :normal)
+
+  def exit_after({duration, unit}, pid, reason)
+      when is_integer(duration) and unit in @units and is_pid(pid) do
+    exit_after(to_nanoseconds(duration, unit), pid, reason)
+  end
+
+  def exit_after(duration, pid, reason)
+      when is_integer(duration) and is_pid(pid) and duration > 0 do
+    apply_after(duration, fn -> Process.exit(pid, reason) end)
+  end
+
+  def cancel(%ResourceHandle{resource: resource}) do
+    Native.cancel(resource)
+  end
+
+  defp apply_on_tick(fun) when is_function(fun) do
     spawn(fn ->
-      receive do
-        {^pid, :ok} ->
-          send(pid, :ok)
+      pid = self()
 
-        {^pid, :cancel} ->
-          Process.exit(pid, :kill)
+      loop = fn f ->
+        receive do
+          {^pid, :tick} ->
+            fun.()
+            f.(f)
+
+          {^pid, :cancel} ->
+            :ok
+        end
       end
+
+      loop.(loop)
     end)
   end
 
-  defp to_nano(duration, :nanosecond), do: duration
-  defp to_nano(duration, :microsecond), do: duration * 1_000
-  defp to_nano(duration, :millisecond), do: duration * 1_000_000
-  defp to_nano(duration, :second), do: duration * 1_000_000_000
-  defp to_nano(duration, :minute), do: duration * 60_000_000_000
-  defp to_nano(duration, :hour), do: duration * 3_600_000_000_000
-
-  defp do_sleep(duration) do
-    MicroTimer.Native.sleep(duration)
-  end
-
-  defp do_interval(duration) do
-    do_sleep(duration)
-
-    pid = self()
-
-    receive do
-      {^pid, :ok} ->
-        do_interval(duration)
-    end
-  end
-
-  defp ref_table do
-    if :ets.whereis(@table_name) === :undefined do
-      :ets.new(@table_name, [:set, :private, :named_table])
-    end
-
-    @table_name
-  end
+  defp to_nanoseconds(duration, :nanosecond), do: duration
+  defp to_nanoseconds(duration, :microsecond), do: duration * 1_000
+  defp to_nanoseconds(duration, :millisecond), do: duration * 1_000_000
+  defp to_nanoseconds(duration, :second), do: duration * 1_000_000_000
 end
