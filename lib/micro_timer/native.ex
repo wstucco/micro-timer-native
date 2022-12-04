@@ -1,5 +1,11 @@
 defmodule MicroTimer.Native do
-  use Rustler, otp_app: :micro_timer_native, crate: :timer
+  @version Mix.Project.config()[:version]
+
+  use RustlerPrecompiled,
+    otp_app: :micro_timer_native,
+    crate: :timer,
+    base_url: "https://github.com/wstucco/micro-timer-native/releases/download/v#{@version}",
+    version: @version
 
   def sleep(duration) when is_integer(duration), do: sleep(duration, self())
   def sleep(duration, pid) when is_integer(duration) and is_pid(pid), do: error()
