@@ -41,10 +41,12 @@ fn load(env: Env, _: Term) -> bool {
 }
 
 #[rustler::nif]
-fn sleep(env: Env, duration: u64, pid: LocalPid) -> Atom {
-    if let Ok(_) = tick(ns(duration)).recv() {
-        send_ok(env, &pid);
-    };
+fn sleep(duration: u64, pid: LocalPid) -> Atom {
+    spawn(move || {
+        if let Ok(_) = tick(ns(duration)).recv() {
+            send_ok(&pid);
+        };
+    });
 
     return atoms::ok();
 }
@@ -117,8 +119,8 @@ fn ns(duration: u64) -> Duration {
     Duration::from_nanos(duration)
 }
 
-fn send_ok(env: Env, pid: &LocalPid) {
-    env.send(&pid, (pid, atoms::ok()).encode(env));
+fn send_ok(pid: &LocalPid) {
+    send(pid, atoms::ok());
 }
 
 fn send_tick(pid: &LocalPid) {
