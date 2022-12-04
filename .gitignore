@@ -24,3 +24,6 @@ micro_timer_native-*.tar
 
 # Temporary files, for example, from tests.
 /tmp/
+
+# Compiled library
+/priv/native/*.so
