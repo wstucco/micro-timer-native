@@ -10,6 +10,8 @@ defmodule MicroTimer.Native.ResourceHandle do
     reference: nil
   ]
 
+  @type t :: %__MODULE__{}
+
   def wrap(resource) do
     %__MODULE__{
       resource: resource,
